@@ -15,6 +15,8 @@ on:
       - "**.go"
       - "go.mod"
       - "go.sum"
+      - "config/version"
+      - ".github/workflows/release.yml"
       - "x-ui.service.debian"
       - "x-ui.service.arch"
       - "x-ui.service.rhel"
