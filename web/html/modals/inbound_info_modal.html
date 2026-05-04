@@ -241,13 +241,13 @@
             </a-tooltip>
           </td>
         </tr>
-        <tr v-if="app.ipLimitEnable">
+        <tr>
           <td>{{ i18n "pages.inbounds.IPLimit" }}</td>
           <td>
             <a-tag>[[ infoModal.clientSettings.limitIp ]]</a-tag>
           </td>
         </tr>
-        <tr v-if="app.ipLimitEnable">
+        <tr>
           <td>{{ i18n "pages.inbounds.deviceLimit" }}</td>
           <td>
             <a-tag>[[ infoModal.clientSettings.deviceLimit || 0 ]]</a-tag>
