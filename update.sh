@@ -8,6 +8,8 @@ plain='\033[0m'
 
 xui_folder="${XUI_MAIN_FOLDER:=/usr/local/x-ui}"
 xui_service="${XUI_SERVICE:=/etc/systemd/system}"
+primary_release_repo="charmtv/ml3x-ui"
+fallback_release_repo="MHSanaei/3x-ui"
 
 # Don't edit this config
 b_source="${BASH_SOURCE[0]}"
@@ -66,6 +68,32 @@ arch() {
 }
 
 echo "Arch: $(arch)"
+
+fetch_latest_release_tag() {
+    local repo=$1
+    local curl_opt=$2
+    ${curl_bin} ${curl_opt} -Ls "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
+}
+
+resolve_latest_release() {
+    release_repo="${primary_release_repo}"
+    tag_version=$(fetch_latest_release_tag "${release_repo}")
+    if [[ ! -n "$tag_version" ]]; then
+        echo -e "${yellow}No release found in ${primary_release_repo}, trying upstream release...${plain}"
+        release_repo="${fallback_release_repo}"
+        tag_version=$(fetch_latest_release_tag "${release_repo}")
+    fi
+    if [[ ! -n "$tag_version" ]]; then
+        echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
+        release_repo="${primary_release_repo}"
+        tag_version=$(fetch_latest_release_tag "${release_repo}" "-4")
+    fi
+    if [[ ! -n "$tag_version" ]]; then
+        echo -e "${yellow}Trying upstream release with IPv4...${plain}"
+        release_repo="${fallback_release_repo}"
+        tag_version=$(fetch_latest_release_tag "${release_repo}" "-4")
+    fi
+}
 
 # Simple helpers
 is_ipv4() {
@@ -778,19 +806,15 @@ update_x-ui() {
     
     echo -e "${green}Downloading new x-ui version...${plain}"
     
-    tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/charmtv/ml3x-ui/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    resolve_latest_release
     if [[ ! -n "$tag_version" ]]; then
-        echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-        tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/charmtv/ml3x-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-        if [[ ! -n "$tag_version" ]]; then
-            _fail "ERROR: Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later"
-        fi
+        _fail "ERROR: Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later"
     fi
-    echo -e "Got x-ui latest version: ${tag_version}, beginning the installation..."
-    ${curl_bin} -fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/charmtv/ml3x-ui/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
+    echo -e "Got x-ui latest version: ${tag_version} from ${release_repo}, beginning the installation..."
+    ${curl_bin} -fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${release_repo}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-        ${curl_bin} -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/charmtv/ml3x-ui/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
+        ${curl_bin} -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${release_repo}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
         if [[ $? -ne 0 ]]; then
             _fail "ERROR: Failed to download x-ui, please be sure that your server can access GitHub"
         fi
