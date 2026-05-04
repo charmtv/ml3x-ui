@@ -1649,7 +1649,9 @@ class Inbound extends XrayCommonClass {
             this.stream.network = 'hysteria';
             this.stream.security = 'tls';
             // Hysteria runs over QUIC and must not inherit TCP TLS ALPN defaults.
-            this.stream.tls.alpn = [ALPN_OPTION.H3];
+            this.stream.tls.sni = 'bing.com';
+            this.stream.tls.alpn = [];
+            this.stream.tls.settings.fingerprint = '';
         }
     }
 
@@ -2148,15 +2150,20 @@ class Inbound extends XrayCommonClass {
 
     genHysteriaLink(address = '', port = this.port, remark = '', clientAuth) {
         const protocol = this.settings.version == 2 ? "hysteria2" : "hysteria";
+        const isHysteria2 = protocol === "hysteria2";
         const link = `${protocol}://${clientAuth}@${address}:${port}`;
 
         const params = new Map();
-        params.set("security", "tls");
+        if (!isHysteria2) params.set("security", "tls");
         if (this.stream.tls.settings.fingerprint?.length > 0) params.set("fp", this.stream.tls.settings.fingerprint);
         if (this.stream.tls.alpn?.length > 0) params.set("alpn", this.stream.tls.alpn);
-        if (this.stream.tls.settings.allowInsecure) params.set("insecure", "1");
+        if (isHysteria2 ? this.stream.tls.settings.allowInsecure !== false : this.stream.tls.settings.allowInsecure) params.set("insecure", "1");
         if (this.stream.tls.settings.echConfigList?.length > 0) params.set("ech", this.stream.tls.settings.echConfigList);
-        if (this.stream.tls.sni?.length > 0) params.set("sni", this.stream.tls.sni);
+        if (this.stream.tls.sni?.length > 0) {
+            params.set("sni", this.stream.tls.sni);
+        } else if (isHysteria2) {
+            params.set("sni", "bing.com");
+        }
 
         const udpMasks = this.stream?.finalmask?.udp;
         if (Array.isArray(udpMasks)) {

@@ -244,6 +244,7 @@ func (s *SubClashService) buildHysteriaProxy(inbound *model.Inbound, client mode
 		proxyType = "hysteria"
 		authKey = "auth-str"
 	}
+	isHysteria2 := proxyType == "hysteria2"
 
 	proxy := map[string]any{
 		"name":   s.SubService.genRemark(inbound, client.Email, extraRemark),
@@ -261,6 +262,8 @@ func (s *SubClashService) buildHysteriaProxy(inbound *model.Inbound, client mode
 	if tlsSettings, ok := rawStream["tlsSettings"].(map[string]any); ok {
 		if serverName, ok := tlsSettings["serverName"].(string); ok && serverName != "" {
 			proxy["sni"] = serverName
+		} else if isHysteria2 {
+			proxy["sni"] = "bing.com"
 		}
 		if alpnList, ok := tlsSettings["alpn"].([]any); ok && len(alpnList) > 0 {
 			out := make([]string, 0, len(alpnList))
@@ -274,13 +277,25 @@ func (s *SubClashService) buildHysteriaProxy(inbound *model.Inbound, client mode
 			}
 		}
 		if inner, ok := tlsSettings["settings"].(map[string]any); ok {
-			if insecure, ok := inner["allowInsecure"].(bool); ok && insecure {
+			insecureSet := false
+			if insecure, ok := inner["allowInsecure"].(bool); ok {
+				insecureSet = true
+				if insecure {
+					proxy["skip-cert-verify"] = true
+				}
+			}
+			if isHysteria2 && !insecureSet {
 				proxy["skip-cert-verify"] = true
 			}
 			if fp, ok := inner["fingerprint"].(string); ok && fp != "" {
 				proxy["client-fingerprint"] = fp
 			}
+		} else if isHysteria2 {
+			proxy["skip-cert-verify"] = true
 		}
+	} else if isHysteria2 {
+		proxy["sni"] = "bing.com"
+		proxy["skip-cert-verify"] = true
 	}
 
 	// Salamander obfs (Hysteria2). Read the same finalmask.udp[salamander]

@@ -402,9 +402,18 @@ func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) strin
 		}
 	}
 	auth := clients[clientIndex].Auth
+	var settings map[string]any
+	json.Unmarshal([]byte(inbound.Settings), &settings)
+	version, _ := settings["version"].(float64)
+	protocol := "hysteria2"
+	if int(version) == 1 {
+		protocol = "hysteria"
+	}
 	params := make(map[string]string)
 
-	params["security"] = "tls"
+	if protocol != "hysteria2" {
+		params["security"] = "tls"
+	}
 	tlsSetting, _ := stream["tlsSettings"].(map[string]any)
 	alpns, _ := tlsSetting["alpn"].([]any)
 	var alpn []string
@@ -415,19 +424,34 @@ func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) strin
 		params["alpn"] = strings.Join(alpn, ",")
 	}
 	if sniValue, ok := searchKey(tlsSetting, "serverName"); ok {
-		params["sni"], _ = sniValue.(string)
+		if sni, _ := sniValue.(string); sni != "" {
+			params["sni"] = sni
+		} else if protocol == "hysteria2" {
+			params["sni"] = "bing.com"
+		}
+	} else if protocol == "hysteria2" {
+		params["sni"] = "bing.com"
 	}
 
 	tlsSettings, _ := searchKey(tlsSetting, "settings")
 	if tlsSetting != nil {
 		if fpValue, ok := searchKey(tlsSettings, "fingerprint"); ok {
-			params["fp"], _ = fpValue.(string)
+			if fp, _ := fpValue.(string); fp != "" {
+				params["fp"] = fp
+			}
 		}
+		insecureSet := false
 		if insecure, ok := searchKey(tlsSettings, "allowInsecure"); ok {
+			insecureSet = true
 			if insecure.(bool) {
 				params["insecure"] = "1"
 			}
 		}
+		if protocol == "hysteria2" && !insecureSet {
+			params["insecure"] = "1"
+		}
+	} else if protocol == "hysteria2" {
+		params["insecure"] = "1"
 	}
 
 	// salamander obfs (Hysteria2). The panel-side link generator already
@@ -449,14 +473,6 @@ func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) strin
 				}
 			}
 		}
-	}
-
-	var settings map[string]any
-	json.Unmarshal([]byte(inbound.Settings), &settings)
-	version, _ := settings["version"].(float64)
-	protocol := "hysteria2"
-	if int(version) == 1 {
-		protocol = "hysteria"
 	}
 
 	// Fan out one link per External Proxy entry if any. Previously this
