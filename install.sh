@@ -88,17 +88,25 @@ is_domain() {
 is_port_in_use() {
     local port="$1"
     if command -v ss >/dev/null 2>&1; then
-        ss -ltn 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {exit 0} END {exit 1}'
+        ss -ltn 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {found=1} END {exit(found ? 0 : 1)}'
         return
     fi
     if command -v netstat >/dev/null 2>&1; then
-        netstat -lnt 2>/dev/null | awk -v p=":${port} " '$4 ~ p {exit 0} END {exit 1}'
+        netstat -lnt 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {found=1} END {exit(found ? 0 : 1)}'
         return
     fi
     if command -v lsof >/dev/null 2>&1; then
         lsof -nP -iTCP:${port} -sTCP:LISTEN >/dev/null 2>&1 && return 0
     fi
     return 1
+}
+
+print_ssl_status() {
+    if [[ "${SSL_CERT_STATUS}" == "configured" ]]; then
+        echo -e "${yellow}⚠ SSL Certificate: Enabled and configured${plain}"
+    else
+        echo -e "${red}⚠ SSL Certificate: Not configured. Use x-ui menu 19 or rerun setup after freeing/forwarding port 80, or choose a custom certificate.${plain}"
+    fi
 }
 
 install_base() {
@@ -560,6 +568,9 @@ prompt_and_setup_ssl() {
     local server_ip="$3"
 
     local ssl_choice=""
+    SSL_HOST="${server_ip}"
+    SSL_PROTOCOL="http"
+    SSL_CERT_STATUS="not_configured"
 
     echo -e "${yellow}Choose SSL certificate setup method:${plain}"
     echo -e "${green}1.${plain} Let's Encrypt for Domain (90-day validity, auto-renews)"
@@ -586,14 +597,20 @@ prompt_and_setup_ssl() {
 
             if [[ -n "${cert_domain}" ]]; then
                 SSL_HOST="${cert_domain}"
+                SSL_PROTOCOL="https"
+                SSL_CERT_STATUS="configured"
                 echo -e "${green}✓ SSL certificate configured successfully with domain: ${cert_domain}${plain}"
             else
                 echo -e "${yellow}SSL setup may have completed, but domain extraction failed${plain}"
                 SSL_HOST="${server_ip}"
+                SSL_PROTOCOL="https"
+                SSL_CERT_STATUS="configured"
             fi
         else
             echo -e "${red}SSL certificate setup failed for domain mode.${plain}"
             SSL_HOST="${server_ip}"
+            SSL_PROTOCOL="http"
+            SSL_CERT_STATUS="failed"
         fi
         ;;
     2)
@@ -615,10 +632,14 @@ prompt_and_setup_ssl() {
         setup_ip_certificate "${server_ip}" "${ipv6_addr}"
         if [ $? -eq 0 ]; then
             SSL_HOST="${server_ip}"
+            SSL_PROTOCOL="https"
+            SSL_CERT_STATUS="configured"
             echo -e "${green}✓ Let's Encrypt IP certificate configured successfully${plain}"
         else
             echo -e "${red}✗ IP certificate setup failed. Please check port 80 is open.${plain}"
             SSL_HOST="${server_ip}"
+            SSL_PROTOCOL="http"
+            SSL_CERT_STATUS="failed"
         fi
         ;;
     3)
@@ -667,7 +688,13 @@ prompt_and_setup_ssl() {
         done
 
         # 3.4 Apply Settings via x-ui binary
-        ${xui_folder}/x-ui cert -webCert "$custom_cert" -webCertKey "$custom_key" >/dev/null 2>&1
+        if ${xui_folder}/x-ui cert -webCert "$custom_cert" -webCertKey "$custom_key" >/dev/null 2>&1; then
+            SSL_PROTOCOL="https"
+            SSL_CERT_STATUS="configured"
+        else
+            SSL_PROTOCOL="http"
+            SSL_CERT_STATUS="failed"
+        fi
         
         # Set SSL_HOST for composing Panel URL
         if [[ -n "$custom_domain" ]]; then
@@ -676,14 +703,20 @@ prompt_and_setup_ssl() {
             SSL_HOST="${server_ip}"
         fi
 
-        echo -e "${green}✓ Custom certificate paths applied.${plain}"
-        echo -e "${yellow}Note: You are responsible for renewing these files externally.${plain}"
+        if [[ "${SSL_CERT_STATUS}" == "configured" ]]; then
+            echo -e "${green}✓ Custom certificate paths applied.${plain}"
+            echo -e "${yellow}Note: You are responsible for renewing these files externally.${plain}"
+        else
+            echo -e "${red}✗ Failed to apply custom certificate paths.${plain}"
+        fi
 
         systemctl restart x-ui >/dev/null 2>&1 || rc-service x-ui restart >/dev/null 2>&1
         ;;
     *)
         echo -e "${red}Invalid option. Skipping SSL setup.${plain}"
         SSL_HOST="${server_ip}"
+        SSL_PROTOCOL="http"
+        SSL_CERT_STATUS="failed"
         ;;
     esac
 }
@@ -749,10 +782,10 @@ config_after_install() {
             echo -e "${green}Password:    ${config_password}${plain}"
             echo -e "${green}Port:        ${config_port}${plain}"
             echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
-            echo -e "${green}Access URL:  https://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
+            echo -e "${green}Access URL:  ${SSL_PROTOCOL}://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
             echo -e "${green}═══════════════════════════════════════════${plain}"
             echo -e "${yellow}⚠ IMPORTANT: Save these credentials securely!${plain}"
-            echo -e "${yellow}⚠ SSL Certificate: Enabled and configured${plain}"
+            print_ssl_status
         else
             local config_webBasePath=$(gen_random_string 18)
             echo -e "${yellow}WebBasePath is missing or too short. Generating a new one...${plain}"
@@ -768,7 +801,8 @@ config_after_install() {
                 echo -e "${yellow}Let's Encrypt now supports both domains and IP addresses!${plain}"
                 echo ""
                 prompt_and_setup_ssl "${existing_port}" "${config_webBasePath}" "${server_ip}"
-                echo -e "${green}Access URL:  https://${SSL_HOST}:${existing_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL:  ${SSL_PROTOCOL}://${SSL_HOST}:${existing_port}/${config_webBasePath}${plain}"
+                print_ssl_status
             else
                 # If a cert already exists, just show the access URL
                 echo -e "${green}Access URL: https://${server_ip}:${existing_port}/${config_webBasePath}${plain}"
@@ -801,7 +835,8 @@ config_after_install() {
             echo -e "${yellow}Let's Encrypt now supports both domains and IP addresses!${plain}"
             echo ""
             prompt_and_setup_ssl "${existing_port}" "${existing_webBasePath}" "${server_ip}"
-            echo -e "${green}Access URL:  https://${SSL_HOST}:${existing_port}/${existing_webBasePath}${plain}"
+            echo -e "${green}Access URL:  ${SSL_PROTOCOL}://${SSL_HOST}:${existing_port}/${existing_webBasePath}${plain}"
+            print_ssl_status
         else
             echo -e "${green}SSL certificate already configured. No action needed.${plain}"
         fi

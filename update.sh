@@ -113,11 +113,11 @@ is_domain() {
 is_port_in_use() {
     local port="$1"
     if command -v ss >/dev/null 2>&1; then
-        ss -ltn 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {exit 0} END {exit 1}'
+        ss -ltn 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {found=1} END {exit(found ? 0 : 1)}'
         return
     fi
     if command -v netstat >/dev/null 2>&1; then
-        netstat -lnt 2>/dev/null | awk -v p=":${port} " '$4 ~ p {exit 0} END {exit 1}'
+        netstat -lnt 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {found=1} END {exit(found ? 0 : 1)}'
         return
     fi
     if command -v lsof >/dev/null 2>&1; then
@@ -131,6 +131,14 @@ gen_random_string() {
     openssl rand -base64 $(( length * 2 )) \
         | tr -dc 'a-zA-Z0-9' \
         | head -c "$length"
+}
+
+print_ssl_status() {
+    if [[ "${SSL_CERT_STATUS}" == "configured" ]]; then
+        echo -e "${yellow}⚠ SSL Certificate: Enabled and configured${plain}"
+    else
+        echo -e "${red}⚠ SSL Certificate: Not configured. Use x-ui menu 19 or rerun setup after freeing/forwarding port 80, or choose a custom certificate.${plain}"
+    fi
 }
 
 install_base() {
@@ -580,6 +588,9 @@ prompt_and_setup_ssl() {
     local server_ip="$3"
 
     local ssl_choice=""
+    SSL_HOST="${server_ip}"
+    SSL_PROTOCOL="http"
+    SSL_CERT_STATUS="not_configured"
 
     echo -e "${yellow}Choose SSL certificate setup method:${plain}"
     echo -e "${green}1.${plain} Let's Encrypt for Domain (90-day validity, auto-renews)"
@@ -606,14 +617,20 @@ prompt_and_setup_ssl() {
 
             if [[ -n "${cert_domain}" ]]; then
                 SSL_HOST="${cert_domain}"
+                SSL_PROTOCOL="https"
+                SSL_CERT_STATUS="configured"
                 echo -e "${green}✓ SSL certificate configured successfully with domain: ${cert_domain}${plain}"
             else
                 echo -e "${yellow}SSL setup may have completed, but domain extraction failed${plain}"
                 SSL_HOST="${server_ip}"
+                SSL_PROTOCOL="https"
+                SSL_CERT_STATUS="configured"
             fi
         else
             echo -e "${red}SSL certificate setup failed for domain mode.${plain}"
             SSL_HOST="${server_ip}"
+            SSL_PROTOCOL="http"
+            SSL_CERT_STATUS="failed"
         fi
         ;;
     2)
@@ -635,10 +652,14 @@ prompt_and_setup_ssl() {
         setup_ip_certificate "${server_ip}" "${ipv6_addr}"
         if [ $? -eq 0 ]; then
             SSL_HOST="${server_ip}"
+            SSL_PROTOCOL="https"
+            SSL_CERT_STATUS="configured"
             echo -e "${green}✓ Let's Encrypt IP certificate configured successfully${plain}"
         else
             echo -e "${red}✗ IP certificate setup failed. Please check port 80 is open.${plain}"
             SSL_HOST="${server_ip}"
+            SSL_PROTOCOL="http"
+            SSL_CERT_STATUS="failed"
         fi
         
         # Restart panel after SSL is configured (restart applies new cert settings)
@@ -695,7 +716,13 @@ prompt_and_setup_ssl() {
         done
 
         # 3.4 Apply Settings via x-ui binary
-        ${xui_folder}/x-ui cert -webCert "$custom_cert" -webCertKey "$custom_key" >/dev/null 2>&1
+        if ${xui_folder}/x-ui cert -webCert "$custom_cert" -webCertKey "$custom_key" >/dev/null 2>&1; then
+            SSL_PROTOCOL="https"
+            SSL_CERT_STATUS="configured"
+        else
+            SSL_PROTOCOL="http"
+            SSL_CERT_STATUS="failed"
+        fi
 
         # Set SSL_HOST for composing Panel URL
         if [[ -n "$custom_domain" ]]; then
@@ -704,14 +731,20 @@ prompt_and_setup_ssl() {
             SSL_HOST="${server_ip}"
         fi
 
-        echo -e "${green}✓ Custom certificate paths applied.${plain}"
-        echo -e "${yellow}Note: You are responsible for renewing these files externally.${plain}"
+        if [[ "${SSL_CERT_STATUS}" == "configured" ]]; then
+            echo -e "${green}✓ Custom certificate paths applied.${plain}"
+            echo -e "${yellow}Note: You are responsible for renewing these files externally.${plain}"
+        else
+            echo -e "${red}✗ Failed to apply custom certificate paths.${plain}"
+        fi
 
         systemctl restart x-ui >/dev/null 2>&1 || rc-service x-ui restart >/dev/null 2>&1
         ;;
     *)
         echo -e "${red}Invalid option. Skipping SSL setup.${plain}"
         SSL_HOST="${server_ip}"
+        SSL_PROTOCOL="http"
+        SSL_CERT_STATUS="failed"
         ;;
     esac
 }
@@ -778,9 +811,9 @@ config_after_update() {
         echo -e "${green}═══════════════════════════════════════════${plain}"
         echo -e "${green}     Panel Access Information              ${plain}"
         echo -e "${green}═══════════════════════════════════════════${plain}"
-        echo -e "${green}Access URL: https://${SSL_HOST}:${existing_port}/${existing_webBasePath}${plain}"
+        echo -e "${green}Access URL: ${SSL_PROTOCOL}://${SSL_HOST}:${existing_port}/${existing_webBasePath}${plain}"
         echo -e "${green}═══════════════════════════════════════════${plain}"
-        echo -e "${yellow}⚠ SSL Certificate: Enabled and configured${plain}"
+        print_ssl_status
     else
         echo -e "${green}SSL certificate is already configured${plain}"
         # Show access URL with existing certificate
