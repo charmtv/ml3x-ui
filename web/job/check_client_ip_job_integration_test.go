@@ -60,12 +60,18 @@ func setupIntegrationDB(t *testing.T) {
 // given email and ip limit.
 func seedInboundWithClient(t *testing.T, tag, email string, limitIp int) {
 	t.Helper()
+	seedInboundWithClientLimits(t, tag, email, limitIp, 0)
+}
+
+func seedInboundWithClientLimits(t *testing.T, tag, email string, limitIp int, deviceLimit int) {
+	t.Helper()
 	settings := map[string]any{
 		"clients": []map[string]any{
 			{
-				"email":   email,
-				"limitIp": limitIp,
-				"enable":  true,
+				"email":       email,
+				"limitIp":     limitIp,
+				"deviceLimit": deviceLimit,
+				"enable":      true,
 			},
 		},
 	}
@@ -225,6 +231,31 @@ func TestUpdateInboundClientIps_ExcessLiveIpIsStillBanned(t *testing.T) {
 	wantSubstr := "[LIMIT_IP] Email = pr4091-abuse || Disconnecting OLD IP = 192.0.2.9"
 	if !contains(string(body), wantSubstr) {
 		t.Fatalf("3xipl.log missing expected ban line %q\nfull log:\n%s", wantSubstr, body)
+	}
+}
+
+func TestUpdateInboundClientIps_DeviceLimitOnlyBansExcessLiveIp(t *testing.T) {
+	setupIntegrationDB(t)
+
+	const email = "device-limit-only"
+	seedInboundWithClientLimits(t, "inbound-device-limit", email, 0, 1)
+
+	now := time.Now().Unix()
+	row := seedClientIps(t, email, nil)
+
+	j := NewCheckClientIpJob()
+	live := []IPWithTimestamp{
+		{IP: "10.8.0.1", Timestamp: now - 5},
+		{IP: "10.8.0.2", Timestamp: now},
+	}
+
+	shouldCleanLog := j.updateInboundClientIps(row, email, live)
+
+	if !shouldCleanLog {
+		t.Fatalf("shouldCleanLog must be true when deviceLimit-only live set exceeds the limit")
+	}
+	if len(j.disAllowedIps) != 1 || j.disAllowedIps[0] != "10.8.0.2" {
+		t.Fatalf("expected 10.8.0.2 to be banned; disAllowedIps = %v", j.disAllowedIps)
 	}
 }
 

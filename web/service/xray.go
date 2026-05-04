@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/json_util"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"go.uber.org/atomic"
@@ -109,6 +112,7 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	limitTrackingEnabled := false
 	for _, inbound := range inbounds {
 		if !inbound.Enable {
 			continue
@@ -134,6 +138,9 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 				}
 
 				email, _ := c["email"].(string)
+				if clientMapHasLimit(c) {
+					limitTrackingEnabled = true
+				}
 
 				// check users active or not via stats
 				if enable, exists := enableMap[email]; exists && !enable {
@@ -195,7 +202,61 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		inboundConfig := inbound.GenXrayInboundConfig()
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
 	}
+	if limitTrackingEnabled {
+		xrayConfig.LogConfig = ensureAccessLogEnabled(xrayConfig.LogConfig)
+	}
 	return xrayConfig, nil
+}
+
+func clientMapHasLimit(client map[string]any) bool {
+	if enable, ok := client["enable"].(bool); ok && !enable {
+		return false
+	}
+	return numberFromAny(client["limitIp"]) > 0 || numberFromAny(client["deviceLimit"]) > 0
+}
+
+func numberFromAny(value any) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
+	}
+}
+
+func ensureAccessLogEnabled(raw json_util.RawMessage) json_util.RawMessage {
+	logConfig := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &logConfig)
+	}
+	if logConfig == nil {
+		logConfig = map[string]any{}
+	}
+	access, _ := logConfig["access"].(string)
+	if strings.TrimSpace(access) == "" || strings.EqualFold(strings.TrimSpace(access), "none") {
+		logConfig["access"] = "./access.log"
+	}
+	data, err := json.Marshal(logConfig)
+	if err != nil {
+		return raw
+	}
+	return json_util.RawMessage(data)
+}
+
+func clientsHaveLimit(clients []model.Client) bool {
+	for _, client := range clients {
+		if client.LimitIP > 0 || client.DeviceLimit > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // GetXrayTraffic fetches the current traffic statistics from the running Xray process.

@@ -67,25 +67,13 @@ func (j *CheckClientIpJob) Run() {
 
 	shouldClearAccessLog := false
 	iplimitActive := j.hasLimitIp()
-	f2bInstalled := j.checkFail2BanInstalled()
 	isAccessLogAvailable := j.checkAccessLogAvailable(iplimitActive)
 
-	if isAccessLogAvailable {
-		if runtime.GOOS == "windows" {
-			if iplimitActive {
-				shouldClearAccessLog = j.processLogFile()
-			}
-		} else {
-			if iplimitActive {
-				if f2bInstalled {
-					shouldClearAccessLog = j.processLogFile()
-				} else {
-					if !f2bInstalled {
-						logger.Warning("[LimitIP] Fail2Ban is not installed, Please install Fail2Ban from the x-ui bash menu.")
-					}
-				}
-			}
+	if isAccessLogAvailable && iplimitActive {
+		if runtime.GOOS != "windows" && !j.checkFail2BanInstalled() {
+			logger.Warning("[LimitIP] Fail2Ban is not installed. Excess clients will be disconnected temporarily, but IP firewall bans require Fail2Ban.")
 		}
+		shouldClearAccessLog = j.processLogFile()
 	}
 
 	if shouldClearAccessLog || (isAccessLogAvailable && time.Now().Unix()-j.lastClear > 3600) {
@@ -158,7 +146,11 @@ func (j *CheckClientIpJob) processLogFile() bool {
 	timestampRegex := regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})`)
 
 	accessLogPath, _ := xray.GetAccessLogPath()
-	file, _ := os.Open(accessLogPath)
+	file, err := os.Open(accessLogPath)
+	if err != nil {
+		logger.Warningf("[LimitIP] Failed to open access log %s: %v", accessLogPath, err)
+		return false
+	}
 	defer file.Close()
 
 	// Track IPs with their last seen timestamp
@@ -219,8 +211,14 @@ func (j *CheckClientIpJob) processLogFile() bool {
 
 		clientIpsRecord, err := j.getInboundClientIps(email)
 		if err != nil {
-			j.addInboundClientIps(email, ipsWithTime)
-			continue
+			clientIpsRecord = &model.InboundClientIps{
+				ClientEmail: email,
+				Ips:         "[]",
+			}
+			if err := database.GetDB().Create(clientIpsRecord).Error; err != nil {
+				logger.Errorf("failed to create inbound client ips for email %s: %s", email, err)
+				continue
+			}
 		}
 
 		shouldCleanLog = j.updateInboundClientIps(clientIpsRecord, email, ipsWithTime) || shouldCleanLog
@@ -459,7 +457,7 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 	}
 
 	if len(j.disAllowedIps) > 0 {
-		logger.Infof("[LIMIT_IP] Client %s: Kept %d live IPs, queued %d new IPs for fail2ban", clientEmail, len(keptLive), len(j.disAllowedIps))
+		logger.Infof("[LIMIT_IP] Client %s: Kept %d live IPs, queued %d excess IPs", clientEmail, len(keptLive), len(j.disAllowedIps))
 	}
 
 	return shouldCleanLog
@@ -495,7 +493,7 @@ func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, c
 	// Only perform remove/re-add for protocols supported by XrayAPI.AddUser
 	protocol := string(inbound.Protocol)
 	switch protocol {
-	case "vmess", "vless", "trojan", "shadowsocks":
+	case "vmess", "vless", "trojan", "shadowsocks", "hysteria", "hysteria2":
 		// supported protocols, continue
 	default:
 		logger.Warningf("[LIMIT_IP] Temporary disconnect is not supported for protocol %s on inbound %s", protocol, inbound.Tag)

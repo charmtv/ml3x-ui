@@ -326,6 +326,9 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		}
 		s.xrayApi.Close()
 	}
+	if clientsHaveLimit(clients) {
+		needRestart = true
+	}
 
 	return inbound, needRestart, err
 }
@@ -401,6 +404,14 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound, err := s.GetInbound(inbound.Id)
 	if err != nil {
 		return inbound, false, err
+	}
+	oldHadClientLimit := false
+	if limitClients, limitErr := s.GetClients(oldInbound); limitErr == nil {
+		oldHadClientLimit = clientsHaveLimit(limitClients)
+	}
+	newHadClientLimit := false
+	if limitClients, limitErr := s.GetClients(inbound); limitErr == nil {
+		newHadClientLimit = clientsHaveLimit(limitClients)
 	}
 
 	tag := oldInbound.Tag
@@ -526,6 +537,9 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		}
 	}
 	s.xrayApi.Close()
+	if oldHadClientLimit || newHadClientLimit {
+		needRestart = true
+	}
 
 	return inbound, needRestart, tx.Save(oldInbound).Error
 }
@@ -753,6 +767,9 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		}
 	}
 	s.xrayApi.Close()
+	if clientsHaveLimit(clients) {
+		needRestart = true
+	}
 
 	return needRestart, tx.Save(oldInbound).Error
 }
@@ -959,6 +976,10 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 		logger.Error("Load Old Data Error")
 		return false, err
 	}
+	oldHadClientLimit := false
+	if limitClients, limitErr := s.GetClients(oldInbound); limitErr == nil {
+		oldHadClientLimit = clientsHaveLimit(limitClients)
+	}
 	var settings map[string]any
 	err = json.Unmarshal([]byte(oldInbound.Settings), &settings)
 	if err != nil {
@@ -1040,6 +1061,9 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 			s.xrayApi.Close()
 		}
 	}
+	if oldHadClientLimit {
+		needRestart = true
+	}
 	return needRestart, db.Save(oldInbound).Error
 }
 
@@ -1067,6 +1091,8 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	if err != nil {
 		return false, err
 	}
+	oldHadClientLimit := clientsHaveLimit(oldClients)
+	newHadClientLimit := clientsHaveLimit(clients)
 
 	oldEmail := ""
 	newClientId := ""
@@ -1217,6 +1243,9 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 		s.xrayApi.Close()
 	} else {
 		logger.Debug("Client old email not found")
+		needRestart = true
+	}
+	if oldHadClientLimit || newHadClientLimit {
 		needRestart = true
 	}
 	return needRestart, tx.Save(oldInbound).Error
